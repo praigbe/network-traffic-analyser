@@ -1,0 +1,9 @@
+# ignore reports (they contain sensitive data)
+report.txt
+reports/
+
+# ignore virtual environment
+venv/
+
+# python cache files
+__pycache__/
