@@ -1,9 +1,21 @@
 # ignore reports (they contain sensitive data)
 report.txt
 reports/
+network_report.txt
 
 # ignore virtual environment
 venv/
+.venv/
 
 # python cache files
 __pycache__/
+*.pyc
+
+# packaging output
+build/
+dist/
+*.spec
+
+# editor/editor-generated files
+.vscode/
+.DS_Store

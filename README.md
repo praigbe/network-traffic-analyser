@@ -1,53 +1,100 @@
- # Network Traffic Analyser
+# Network Traffic Observer
 
-A Python tool that captures live network traffic, spots suspicious behaviour, and writes a security report. Built as part of my cybersecurity portfolio while working towards a degree apprenticeship in 2027.
+This project started out as a small packet sniffer and gradually turned into something more useful: a desktop-style network monitor for checking what is happening on a local network, spotting suspicious traffic patterns, and giving a quick sense of whether the Wi‑Fi setup looks safe or not.
 
----
-
-## Why I built this
-
-I wanted a project that went beyond theory and actually touched real networking concepts — packet capture, protocol detection, port scan logic. The kind of stuff that comes up in SOC analyst and cyber security roles. This felt like the most honest way to show I understand what's happening on a network, not just that I've read about it.
-
----
+It is not a polished enterprise security suite, and it was never meant to pretend to be one. It is more of a practical tool for curious people who want to see traffic in a more readable way and ask better questions about what is moving around them.
 
 ## What it does
 
-- Captures live packets (TCP, UDP, ICMP) from your network interface
-- Identifies protocols and destination ports in real time
-- Flags suspicious activity — port scans and connections to sensitive ports like SSH, RDP, and SMB
-- Generates a `report.txt` with a full packet log and any alerts raised
+The app gives you a dark, modern dashboard with a few useful indicators:
 
----
+- live packet capture from a selected network interface
+- protocol and destination-port visibility
+- detection of suspicious activity like repeated port probing
+- a quick view of risky destinations such as SSH, RDP, SMB, MySQL, VNC, and similar services
+- Wi‑Fi security assessment based on the selected mode
+- exportable report for later review
 
-## Challenges I ran into
+It is a simple tool, but the point is not complexity for the sake of it. It is about making network patterns easier to understand without burying the user in raw packets.
 
-**Scapy needs root privileges** — it wouldn't run at all until I figured out it needs access to raw sockets, which requires sudo. That was my first real lesson in why low-level network tools operate differently to normal Python scripts.
+## Why it is useful
 
-**Sudo broke my virtual environment** — running `sudo python analyser.py` bypassed the venv completely, so none of my installed packages were found. The fix was `sudo venv/bin/python analyser.py` to point it at the right Python binary. Took me a while to work out but I actually understand Linux PATH resolution a lot better now because of it.
+Most of the time, traffic looks harmless until you look closely. A small burst of packets to different ports can be a scan. Repeated access to a server port can be a clue. An old Wi‑Fi mode can quietly make everything on a network more exposed than it should be.
 
-**Keeping the report off GitHub** — the generated report contains real IP addresses from my network. Pushing that publicly would be a security risk, so I added `report.txt` to `.gitignore`. Small thing but it's the kind of habit that matters in a real security role.
-
----
+This app helps with that by pulling those signals into a clearer view. It is not trying to replace a full IDS or a serious security appliance. It is more like a local observatory: something you open to get a better feel for what is happening around your device.
 
 ## How to run it
 
+The easiest way is to use the included launcher script, which sets up a local virtual environment and installs the dependencies for you:
+
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-sudo venv/bin/python analyser.py
+python start_app.py
 ```
 
----
+This will automatically:
 
-## Skills this shows
+- create a local virtual environment if needed
+- install dependencies from the requirements file
+- launch the application
 
-- Python scripting and working with third-party libraries
-- Networking fundamentals — TCP/IP, ports, packet structure
-- Basic intrusion detection logic (the same concepts behind tools like Snort)
-- Linux command line and understanding of how environments and permissions work
-- Security awareness — knowing what not to expose publicly
+If you want to run it manually instead, this also works:
 
----
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python analyser.py
+```
 
-Built by Presley 
+On Linux, live packet capture may require elevated permissions:
+
+```bash
+sudo .venv/bin/python analyser.py
+```
+
+## Demo mode
+
+If you want to try the interface without capturing live traffic, use:
+
+```bash
+python analyser.py --demo
+```
+
+There is also a headless mode for quick summaries in a terminal:
+
+```bash
+python analyser.py --headless --demo
+```
+
+## Building a desktop executable
+
+If you want something closer to a normal desktop app, package it with PyInstaller:
+
+```bash
+python -m pip install pyinstaller
+pyinstaller --onefile --windowed --name NetworkTrafficObserver analyser.py
+```
+
+The app is also set up to build through:
+
+```bash
+python build_exe.py
+```
+
+This is the closest step to a real “download and run” workflow, though it still depends on the Python environment used to build it.
+
+## Notes
+
+This project is meant as a practical learning and monitoring tool. It is useful for checking what is on your local network, spotting suspicious patterns, and understanding how simple network visibility can reveal a lot.
+
+It is best treated as a local security helper rather than a guarantee of what is safe or unsafe. Traffic can be unusual without being malicious, and not every flag is a serious incident. The goal is to make those questions easier to ask and easier to understand.
+
+## Requirements
+
+- Python 3.10+
+- Scapy
+- PyInstaller
+- Tkinter
+
+If you are using a Linux setup, make sure your system has the correct permissions to access the network interface you want to inspect.
+
