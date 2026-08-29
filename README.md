@@ -66,22 +66,38 @@ There is also a headless mode for quick summaries in a terminal:
 python analyser.py --headless --demo
 ```
 
-## Building a desktop executable
+## Building the distributable for GitHub release
 
-If you want something closer to a normal desktop app, package it with PyInstaller:
+This project is meant to be built once by the developer, then shared as a single downloadable file for users.
+
+### Build on your machine
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python build_exe.py
+```
+
+This runs the same packaging workflow the project is set up for and creates the final app in the `dist/` folder.
+
+### Direct PyInstaller build
+
+If you want to build it manually instead of using the helper script:
 
 ```bash
 python -m pip install pyinstaller
 pyinstaller --onefile --windowed --name NetworkTrafficObserver analyser.py
 ```
 
-The app is also set up to build through:
+The output file will be created in `dist/`.
 
-```bash
-python build_exe.py
-```
+### Important notes
 
-This is the closest step to a real “download and run” workflow, though it still depends on the Python environment used to build it.
+- The executable has to be built on the target platform. A Windows `.exe` is not the same as a Linux binary.
+- The user should not have to install Python or project dependencies.
+- The developer builds the app once and uploads that file to GitHub Releases or another download page.
+- Live traffic capture may still require administrator or root privileges at runtime.
 
 ## Notes
 

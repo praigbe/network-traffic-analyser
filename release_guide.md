@@ -9,7 +9,7 @@ This project is designed so that the end user does not need to install Python or
 
 ## Build the distributable
 
-Create a clean virtual environment if you want a repeatable build, then run the packaging script:
+This is the actual developer workflow for creating a downloadable app file.
 
 ```bash
 python -m venv .venv
@@ -18,17 +18,27 @@ pip install -r requirements.txt
 python build_exe.py
 ```
 
-The output will appear in the `dist` folder.
+This creates the final packaged app in the `dist/` folder.
 
-## PyInstaller command
+## Direct PyInstaller command
 
-If you want to build it manually:
+If you want to package it manually instead of using the helper script:
 
 ```bash
 pyinstaller --onefile --windowed --name NetworkTrafficObserver analyser.py
 ```
 
-This creates one bundled application file.
+## Release flow
+
+1. Build the executable on the target OS
+2. Open GitHub Releases
+3. Upload the built file
+4. Publish the release
+5. Users download the single file and run it directly
+
+## Important note
+
+The executable must be built on the same operating system you want to distribute it for. A Windows build will not run on Linux, and vice versa.
 
 ## GitHub release flow
 
