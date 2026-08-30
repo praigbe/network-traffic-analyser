@@ -477,6 +477,35 @@ def build_report(summary: Dict[str, Any], packets: List[Dict[str, Any]], wifi_st
     return str(target_path)
 
 
+def build_user_friendly_summary(summary: Dict[str, Any]) -> str:
+    total_packets = summary.get("total_packets", 0)
+    risky_port_hits = summary.get("risky_port_hits", 0)
+    risk_level = (summary.get("risk_level") or "low").lower()
+    scan_alert = summary.get("port_scan_alert") or {}
+    top_talker = summary.get("top_talkers", [])
+    top_ip = top_talker[0].get("ip") if top_talker else "unknown source"
+    top_count = top_talker[0].get("packets", 0) if top_talker else 0
+
+    if scan_alert.get("alert"):
+        scan_text = (
+            f"A port scan was detected from {scan_alert.get('src_ip', 'an unknown source')} "
+            f"after probing {scan_alert.get('ports_probed', 0)} ports."
+        )
+    else:
+        scan_text = "No obvious port scan pattern was detected during this capture."
+
+    if risky_port_hits > 0:
+        risky_text = f"This traffic touched {risky_port_hits} risky service endpoint(s), including ports commonly used by admin services."
+    else:
+        risky_text = "There were no risky service hits in the captured traffic."
+
+    top_talker_text = f"The busiest source was {top_ip} with {top_count} packets observed."
+    return (
+        f"This capture reviewed {total_packets} packets and the network appears to be {risk_level} risk overall. "
+        f"{risky_text} {scan_text} {top_talker_text}"
+    )
+
+
 class TrafficAnalyzerApp(tk.Tk):
     def __init__(self, demo_mode: bool = False):
         super().__init__()
@@ -489,6 +518,9 @@ class TrafficAnalyzerApp(tk.Tk):
         self.sniffer = None
         self.demo_mode = demo_mode
         self.wifi_mode_var = tk.StringVar(value="WPA2")
+        self.capture_target = 0
+        self.capture_progress_var = tk.DoubleVar(value=0.0)
+        self.capture_summary_var = tk.StringVar(value="No capture yet")
 
         self._build_ui()
 
@@ -583,6 +615,13 @@ class TrafficAnalyzerApp(tk.Tk):
         self.trend_var = tk.StringVar(value="No data")
         tk.Label(trend_frame, textvariable=self.trend_var, fg="#dfe7ff", bg="#111827", font=("Segoe UI", 9), wraplength=180, justify="left").pack(anchor="w", pady=(6, 0))
 
+        progress_card = tk.Frame(left, bg="#111827", padx=14, pady=12, bd=1, relief="solid")
+        progress_card.pack(fill="x", pady=8)
+        tk.Label(progress_card, text="Capture progress", fg="#a8b6d9", bg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        self.progress_bar = ttk.Progressbar(progress_card, variable=self.capture_progress_var, maximum=100, length=180)
+        self.progress_bar.pack(fill="x", pady=(8, 6))
+        tk.Label(progress_card, textvariable=self.capture_summary_var, fg="#dfe7ff", bg="#111827", font=("Segoe UI", 9), wraplength=180, justify="left").pack(anchor="w")
+
         status_frame = tk.Frame(right, bg="#101827")
         status_frame.pack(fill="x", padx=14, pady=(14, 8))
         tk.Label(status_frame, text="Status", fg="#f8f9ff", bg="#101827", font=("Segoe UI", 12, "bold")).pack(anchor="w")
@@ -646,15 +685,42 @@ class TrafficAnalyzerApp(tk.Tk):
             return
 
         self.packets = []
+        self.capture_target = count
+        self.capture_progress_var.set(0.0)
+        self.capture_summary_var.set("Collecting packets...")
         self.status_var.set(f"Capturing up to {count} packets on {iface}...")
         self._write_log(f"Starting live analysis on {iface}.", "info")
 
         try:
             self.sniffer = AsyncSniffer(iface=iface, prn=self._handle_packet, count=count)
             self.sniffer.start()
+            self._schedule_capture_progress()
         except Exception as exc:  # pragma: no cover - GUI safety net
             self._write_log(f"Capture failed: {exc}", "alert")
             self.status_var.set("Capture failed. Please ensure the interface is available and you have permissions.")
+
+    def _schedule_capture_progress(self):
+        if self.sniffer is None:
+            return
+        if self.capture_target > 0:
+            progress = min(100, (len(self.packets) / self.capture_target) * 100)
+            self.capture_progress_var.set(progress)
+            self.capture_summary_var.set(f"Captured {len(self.packets)}/{self.capture_target} packets")
+            self.status_var.set(f"Capturing... {len(self.packets)}/{self.capture_target} packets received.")
+
+        if self.sniffer is not None and getattr(self.sniffer, "running", False):
+            self.after(200, self._schedule_capture_progress)
+        else:
+            self._finalize_capture()
+
+    def _finalize_capture(self):
+        summary = summarise_traffic(self.packets)
+        explanation = build_user_friendly_summary(summary)
+        self.capture_summary_var.set(explanation)
+        self.capture_progress_var.set(100.0)
+        self.status_var.set(f"Capture complete. {summary['total_packets']} packets reviewed. Risk level {summary['risk_level'].upper()}.")
+        self._write_log(f"Capture finished: {explanation}", "ok")
+        self.refresh_dashboard()
 
     def stop_capture(self):
         if self.sniffer is not None:
@@ -662,6 +728,7 @@ class TrafficAnalyzerApp(tk.Tk):
                 self.sniffer.stop()
                 self._write_log("Capture stopped by user.", "ok")
                 self.status_var.set("Capture stopped. The current packet window is still visible in the dashboard.")
+                self.capture_summary_var.set(f"Stopped early after {len(self.packets)} packets. Results are still available.")
             except Exception as exc:  # pragma: no cover - GUI safety net
                 self._write_log(f"Stop request failed: {exc}", "alert")
         else:
@@ -788,6 +855,7 @@ class TrafficAnalyzerApp(tk.Tk):
             self.trend_var.set("No data")
 
         risk_label = summary.get("risk_level", "low").upper()
+        self.capture_summary_var.set(build_user_friendly_summary(summary))
         if summary["port_scan_alert"]["alert"]:
             self.status_var.set(f"Possible scan: {summary['port_scan_alert']['src_ip']} probed {summary['port_scan_alert']['ports_probed']} ports. Risk level {risk_label}.")
             self._write_log(summary["port_scan_alert"]["explanation"], "alert")

@@ -170,3 +170,21 @@ def test_export_summary_generates_json_and_csv_outputs():
 
     assert all(path.exists() for path in export_paths.values())
     assert set(export_paths) == {"json", "csv"}
+
+
+def test_build_user_friendly_summary_explains_capture_result():
+    summary = {
+        "total_packets": 12,
+        "risky_port_hits": 5,
+        "risk_level": "high",
+        "port_scan_alert": {"alert": True, "src_ip": "198.51.100.8", "ports_probed": 6},
+        "top_talkers": [{"ip": "10.0.0.5", "packets": 7}],
+        "alerts": [{"severity": "critical", "title": "Port scan detected"}],
+    }
+
+    explanation = analyser.build_user_friendly_summary(summary)
+
+    assert "high" in explanation.lower()
+    assert "port scan" in explanation.lower()
+    assert "198.51.100.8" in explanation
+    assert "10.0.0.5" in explanation
