@@ -52,6 +52,191 @@ def classify_packet(packet: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def get_top_talkers(packets: Iterable[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
+    source_counts = Counter()
+    for packet in packets:
+        src = packet.get("src")
+        if src:
+            source_counts[src] += 1
+
+    return [
+        {"ip": ip, "packets": count}
+        for ip, count in sorted(source_counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    ]
+
+
+def calculate_risk_level(summary: Dict[str, Any]) -> str:
+    port_scan_alert = summary.get("port_scan_alert", {}).get("alert")
+    risky_port_hits = summary.get("risky_port_hits", 0)
+    alerts = summary.get("alerts", [])
+    highest_severity = "low"
+
+    if alerts:
+        severity_order = {"low": 1, "moderate": 2, "high": 3, "critical": 4}
+        for alert in alerts:
+            highest_severity = max(highest_severity, alert.get("severity", "low"), key=lambda sev: severity_order.get(sev, 0))
+
+    if port_scan_alert and risky_port_hits >= 4:
+        return "critical"
+    if highest_severity == "critical" or port_scan_alert or risky_port_hits >= 5:
+        return "high"
+    if highest_severity in {"high", "moderate"} or risky_port_hits >= 2:
+        return "moderate"
+    if risky_port_hits > 0 or highest_severity == "low":
+        return "low"
+    return "low"
+
+
+def build_alerts(packets: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    alerts: List[Dict[str, Any]] = []
+    risky_hits = Counter()
+
+    for packet in packets:
+        port = packet.get("dst_port")
+        if port in RISKY_PORTS:
+            risky_hits[packet.get("src", "unknown")] += 1
+
+    for src_ip, count in risky_hits.items():
+        severity = "moderate"
+        if count >= 4:
+            severity = "high"
+        if count >= 6:
+            severity = "critical"
+        alerts.append({
+            "severity": severity,
+            "title": "Risky service activity",
+            "message": f"{src_ip} contacted risky ports {count} times.",
+            "src_ip": src_ip,
+            "dst_port": None,
+        })
+
+    port_scan_alert = detect_port_scan(packets)
+    if port_scan_alert["alert"]:
+        alerts.append({
+            "severity": "critical",
+            "title": "Port scan detected",
+            "message": port_scan_alert["explanation"],
+            "src_ip": port_scan_alert["src_ip"],
+            "dst_port": None,
+        })
+
+    return sorted(alerts, key=lambda item: {"low": 1, "moderate": 2, "high": 3, "critical": 4}.get(item["severity"], 0), reverse=True)
+
+
+def get_alert_counts(alerts: Iterable[Dict[str, Any]]) -> Dict[str, int]:
+    counts = {"low": 0, "moderate": 0, "high": 0, "critical": 0}
+    for alert in alerts:
+        severity = alert.get("severity", "low")
+        if severity in counts:
+            counts[severity] += 1
+    return counts
+
+
+def get_device_activity(packets: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    activity = defaultdict(lambda: {"ip": None, "packets": 0, "unique_ports": set(), "risky_hits": 0})
+
+    for packet in packets:
+        src = packet.get("src")
+        dst = packet.get("dst")
+        for ip in (src, dst):
+            if not ip:
+                continue
+            entry = activity[ip]
+            entry["ip"] = ip
+            entry["packets"] += 1
+            port = packet.get("dst_port")
+            if port is not None:
+                entry["unique_ports"].add(port)
+            if port in RISKY_PORTS:
+                entry["risky_hits"] += 1
+
+    devices = []
+    for ip, entry in activity.items():
+        devices.append({
+            "ip": ip,
+            "packets": entry["packets"],
+            "unique_ports": len(entry["unique_ports"]),
+            "risky_hits": entry["risky_hits"],
+        })
+
+    return sorted(devices, key=lambda item: (-item["packets"], item["ip"]))
+
+
+def infer_device_role(ip: str) -> str:
+    if ip.startswith("192.168.1."):
+        last_octet = int(ip.split(".")[-1])
+        if last_octet in {1, 254}:
+            return "gateway"
+        if last_octet % 2 == 0:
+            return "client"
+        return "device"
+    if ip.startswith("10."):
+        return "internal-host"
+    if ip.startswith("192.168."):
+        return "local-network-device"
+    return "external-host"
+
+
+def infer_hostname(ip: str) -> str:
+    last_octet = int(ip.split(".")[-1])
+    if ip.startswith("192.168.1.") and last_octet == 1:
+        return "router"
+    if ip.startswith("192.168.1.") and last_octet == 10:
+        return "desktop"
+    if ip.startswith("192.168.1.") and last_octet == 27:
+        return "laptop"
+    if ip.startswith("10."):
+        return "internal-host"
+    return f"host-{last_octet}"
+
+
+def discover_devices(packets: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen: Dict[str, Dict[str, Any]] = {}
+
+    for packet in packets:
+        for key in ("src", "dst"):
+            ip = packet.get(key)
+            if not ip:
+                continue
+            if ip not in seen:
+                seen[ip] = {
+                    "ip": ip,
+                    "hostname": infer_hostname(ip),
+                    "role": infer_device_role(ip),
+                    "packets_seen": 0,
+                    "risk_hits": 0,
+                }
+            seen[ip]["packets_seen"] += 1
+            if packet.get("dst_port") in RISKY_PORTS:
+                seen[ip]["risk_hits"] += 1
+
+    devices = list(seen.values())
+    return sorted(devices, key=lambda item: (-item["packets_seen"], item["ip"]))
+
+
+def describe_packet(packet: Dict[str, Any]) -> Dict[str, Any]:
+    dst_port = packet.get("dst_port")
+    protocol = packet.get("protocol", "UNKNOWN")
+    port_risk = "low"
+    service_name = "General traffic"
+
+    if dst_port in RISKY_PORTS:
+        service_name = RISKY_PORTS[dst_port]
+        port_risk = "moderate"
+        if dst_port in {22, 23, 3389, 5900, 445}:
+            port_risk = "high"
+
+    return {
+        "protocol": protocol,
+        "source": packet.get("src", "unknown"),
+        "destination": packet.get("dst", "unknown"),
+        "port": dst_port,
+        "service": service_name,
+        "ttl": packet.get("ttl"),
+        "risk_level": port_risk,
+    }
+
+
 def summarise_traffic(packets: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     packet_list = list(packets)
     protocol_counts = Counter()
@@ -68,14 +253,21 @@ def summarise_traffic(packets: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             risky_port_hits += 1
 
     port_scan_alert = detect_port_scan(packet_list)
-
-    return {
+    alerts = build_alerts(packet_list)
+    summary = {
         "total_packets": len(packet_list),
         "protocol_counts": dict(protocol_counts),
         "risky_port_hits": risky_port_hits,
         "unique_ips": len(unique_ips),
         "port_scan_alert": port_scan_alert,
+        "top_talkers": get_top_talkers(packet_list),
+        "alerts": alerts,
+        "alert_history": alerts,
+        "alert_counts": get_alert_counts(alerts),
+        "device_activity": get_device_activity(packet_list),
     }
+    summary["risk_level"] = calculate_risk_level(summary)
+    return summary
 
 
 def detect_port_scan(packets: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
@@ -148,11 +340,99 @@ def get_release_bundle_dir(platform_name: str) -> Path:
     return root / "release" / platform_name
 
 
+def save_capture_session(packets: List[Dict[str, Any]], filename: str | Path | None = None) -> Path:
+    target_dir = Path(__file__).resolve().parent / "sessions"
+    target_dir.mkdir(exist_ok=True, parents=True)
+    session_name = filename if filename is not None else f"capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    target_path = target_dir / session_name if not Path(session_name).is_absolute() else Path(session_name)
+    with open(target_path, "w", encoding="utf-8") as handle:
+        json.dump(packets, handle, indent=2)
+    return target_path
+
+
+def load_capture_session(path: str | Path) -> List[Dict[str, Any]]:
+    target_path = Path(path)
+    with open(target_path, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    return data if isinstance(data, list) else []
+
+
+def calculate_trend_snapshot(packets: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    packet_list = list(packets)
+    timestamps = []
+    for packet in packet_list:
+        value = packet.get("timestamp")
+        if not value:
+            continue
+        try:
+            timestamps.append(datetime.strptime(value, "%Y-%m-%d %H:%M:%S"))
+        except ValueError:
+            continue
+
+    if not timestamps:
+        return {"packet_count": len(packet_list), "peak_interval_seconds": 0, "timeline": [], "average_packet_rate": 0.0}
+
+    time_deltas = []
+    for first, second in zip(timestamps, timestamps[1:]):
+        time_deltas.append((second - first).total_seconds())
+
+    peak_interval = max(time_deltas) if time_deltas else 0
+    average_rate = 0.0
+    if len(timestamps) > 1:
+        total_span = max((timestamps[-1] - timestamps[0]).total_seconds(), 1)
+        average_rate = (len(timestamps) - 1) / total_span
+
+    timeline = [
+        {"timestamp": ts.strftime("%Y-%m-%d %H:%M:%S"), "count": 1}
+        for ts in timestamps
+    ]
+
+    return {
+        "packet_count": len(packet_list),
+        "peak_interval_seconds": peak_interval,
+        "average_packet_rate": round(average_rate, 3),
+        "timeline": timeline,
+    }
+
+
+def export_summary(summary: Dict[str, Any], name: str) -> Dict[str, Path]:
+    exports_dir = Path(__file__).resolve().parent / "exports"
+    exports_dir.mkdir(exist_ok=True, parents=True)
+    base_name = Path(name).stem if isinstance(name, str) and "." in name else str(name)
+
+    json_path = exports_dir / f"{base_name}.json"
+    csv_path = exports_dir / f"{base_name}.csv"
+
+    with open(json_path, "w", encoding="utf-8") as handle:
+        json.dump(summary, handle, indent=2)
+
+    csv_rows = [
+        ["metric", "value"],
+        ["total_packets", summary.get("total_packets", 0)],
+        ["risky_port_hits", summary.get("risky_port_hits", 0)],
+        ["risk_level", summary.get("risk_level", "low")],
+    ]
+
+    for entry in summary.get("top_talkers", []):
+        csv_rows.append([f"top_talker:{entry.get('ip', 'unknown')}", entry.get("packets", 0)])
+
+    for alert in summary.get("alerts", []):
+        csv_rows.append([f"alert:{alert.get('title', 'alert')}", alert.get("severity", "low")])
+
+    with open(csv_path, "w", encoding="utf-8", newline="") as handle:
+        import csv
+        writer = csv.writer(handle)
+        writer.writerows(csv_rows)
+
+    return {"json": json_path, "csv": csv_path}
+
+
 def build_report(summary: Dict[str, Any], packets: List[Dict[str, Any]], wifi_status: Dict[str, Any], report_path: str | Path | None = None) -> str:
     protocol_summary = " | ".join(f"{name}: {count}" for name, count in sorted(summary["protocol_counts"].items())) or "No traffic captured"
     scan_alert = summary["port_scan_alert"]
     target_path = Path(report_path) if report_path is not None else get_default_report_path()
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    top_talkers = ", ".join(f"{entry['ip']} ({entry['packets']})" for entry in summary.get("top_talkers", [])) or "No source activity recorded"
 
     lines = [
         "=" * 70,
@@ -163,6 +443,7 @@ def build_report(summary: Dict[str, Any], packets: List[Dict[str, Any]], wifi_st
         "Security posture:",
         f"- Wi‑Fi assessment: {wifi_status['status'].upper()} ({wifi_status['score']}/100)",
         f"- Reason: {wifi_status['reason']}",
+        f"- Overall risk level: {summary.get('risk_level', 'low').upper()}",
         "",
         "Traffic summary:",
         f"- Total packets: {summary['total_packets']}",
@@ -170,6 +451,7 @@ def build_report(summary: Dict[str, Any], packets: List[Dict[str, Any]], wifi_st
         f"- Unique IPs seen: {summary['unique_ips']}",
         f"- Protocol mix: {protocol_summary}",
         f"- Port scan alert: {'YES' if scan_alert['alert'] else 'NO'}",
+        f"- Top talkers: {top_talkers}",
         "",
         "Packet log:",
     ]
@@ -246,6 +528,9 @@ class TrafficAnalyzerApp(tk.Tk):
         ttk.Button(top_bar, text="Start Capture", command=self.start_capture).pack(side="left", padx=4)
         ttk.Button(top_bar, text="Stop Capture", command=self.stop_capture).pack(side="left", padx=4)
         ttk.Button(top_bar, text="Run Demo", command=self.run_demo).pack(side="left", padx=4)
+        ttk.Button(top_bar, text="Save Session", command=self.save_session).pack(side="left", padx=4)
+        ttk.Button(top_bar, text="Load Session", command=self.load_session).pack(side="left", padx=4)
+        ttk.Button(top_bar, text="Export Summary", command=self.export_summary).pack(side="left", padx=4)
         ttk.Button(top_bar, text="Save Report", command=self.save_report).pack(side="left", padx=4)
         ttk.Button(top_bar, text="Choose Folder", command=self.choose_report_folder).pack(side="left", padx=4)
 
@@ -274,17 +559,47 @@ class TrafficAnalyzerApp(tk.Tk):
         self.wifi_status_label.pack(anchor="w", pady=(6, 0))
         tk.Label(wifi_card, text="Status will update based on the chosen mode.", fg="#dbe5ff", bg="#111827", font=("Segoe UI", 9), wraplength=180, justify="left").pack(anchor="w", pady=(6, 0))
 
+        host_card = tk.Frame(left, bg="#111827", padx=14, pady=12, bd=1, relief="solid")
+        host_card.pack(fill="x", pady=8)
+        tk.Label(host_card, text="Top talkers", fg="#a8b6d9", bg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        self.top_talkers_var = tk.StringVar(value="No traffic yet")
+        tk.Label(host_card, textvariable=self.top_talkers_var, fg="#dfe7ff", bg="#111827", font=("Segoe UI", 9), wraplength=180, justify="left").pack(anchor="w", pady=(6, 0))
+
+        device_card = tk.Frame(left, bg="#111827", padx=14, pady=12, bd=1, relief="solid")
+        device_card.pack(fill="x", pady=8)
+        tk.Label(device_card, text="Detected devices", fg="#a8b6d9", bg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        self.device_activity_var = tk.StringVar(value="No activity")
+        tk.Label(device_card, textvariable=self.device_activity_var, fg="#dfe7ff", bg="#111827", font=("Segoe UI", 9), wraplength=180, justify="left").pack(anchor="w", pady=(6, 0))
+
+        alert_card = tk.Frame(left, bg="#111827", padx=14, pady=12, bd=1, relief="solid")
+        alert_card.pack(fill="x", pady=8)
+        tk.Label(alert_card, text="Recent alerts", fg="#a8b6d9", bg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        self.alerts_var = tk.StringVar(value="No alerts")
+        tk.Label(alert_card, textvariable=self.alerts_var, fg="#dfe7ff", bg="#111827", font=("Segoe UI", 9), wraplength=180, justify="left").pack(anchor="w", pady=(6, 0))
+
+        trend_frame = tk.Frame(left, bg="#111827", padx=14, pady=12, bd=1, relief="solid")
+        trend_frame.pack(fill="x", pady=8)
+        tk.Label(trend_frame, text="Traffic trend", fg="#a8b6d9", bg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        self.trend_var = tk.StringVar(value="No data")
+        tk.Label(trend_frame, textvariable=self.trend_var, fg="#dfe7ff", bg="#111827", font=("Segoe UI", 9), wraplength=180, justify="left").pack(anchor="w", pady=(6, 0))
+
         status_frame = tk.Frame(right, bg="#101827")
         status_frame.pack(fill="x", padx=14, pady=(14, 8))
         tk.Label(status_frame, text="Status", fg="#f8f9ff", bg="#101827", font=("Segoe UI", 12, "bold")).pack(anchor="w")
         self.status_var = tk.StringVar(value="Idle — ready to start a new capture.")
         tk.Label(status_frame, textvariable=self.status_var, fg="#cfe1ff", bg="#101827", font=("Segoe UI", 10), wraplength=700, justify="left").pack(anchor="w", pady=6)
 
-        self.log_text = tk.Text(right, bg="#0a1220", fg="#d9e8ff", insertbackground="#d9e8ff", wrap="word", height=18, font=("Consolas", 10))
+        self.log_text = tk.Text(right, bg="#0a1220", fg="#d9e8ff", insertbackground="#d9e8ff", wrap="word", height=12, font=("Consolas", 10))
         self.log_text.pack(fill="both", expand=True, padx=14, pady=(0, 12))
         self.log_text.tag_configure("alert", foreground="#ff8a80")
         self.log_text.tag_configure("info", foreground="#79d6ff")
         self.log_text.tag_configure("ok", foreground="#7ef2b4")
+
+        detail_frame = tk.Frame(right, bg="#101827", padx=12, pady=10)
+        detail_frame.pack(fill="x", padx=14, pady=(0, 12))
+        tk.Label(detail_frame, text="Packet details", fg="#f8f9ff", bg="#101827", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        self.packet_detail_text = tk.Text(detail_frame, bg="#0a1220", fg="#d9e8ff", insertbackground="#d9e8ff", wrap="word", height=7, font=("Consolas", 10))
+        self.packet_detail_text.pack(fill="both", expand=True)
 
         self._write_log("Initialising security scanner...", "info")
         self._write_log("Press Start Capture to inspect traffic or run the built-in demo for a sample analysis.", "ok")
@@ -293,6 +608,30 @@ class TrafficAnalyzerApp(tk.Tk):
     def _write_log(self, message: str, tag: str = "info"):
         self.log_text.insert("end", message + "\n", tag)
         self.log_text.see("end")
+
+    def _update_packet_details(self, packet: Dict[str, Any] | None = None):
+        if packet is None and self.packets:
+            packet = self.packets[-1]
+
+        self.packet_detail_text.delete("1.0", "end")
+        if packet is None:
+            self.packet_detail_text.insert("end", "No packet data available yet.\n")
+            return
+
+        details = describe_packet(packet)
+        port_label = details["port"] if details["port"] is not None else "N/A"
+        ttl_label = details["ttl"] if details["ttl"] is not None else "N/A"
+        payload = (
+            f"Timestamp: {packet.get('timestamp', 'N/A')}\n"
+            f"Protocol: {details['protocol']}\n"
+            f"Source: {details['source']}\n"
+            f"Destination: {details['destination']}\n"
+            f"Port: {port_label}\n"
+            f"Service: {details['service']}\n"
+            f"TTL: {ttl_label}\n"
+            f"Risk level: {details['risk_level'].upper()}"
+        )
+        self.packet_detail_text.insert("end", payload)
 
     def _packet_to_log(self, packet: Dict[str, Any]) -> str:
         port = packet.get("dst_port")
@@ -336,6 +675,7 @@ class TrafficAnalyzerApp(tk.Tk):
 
         parsed = classify_packet(packet)
         self.packets.append(parsed)
+        self._update_packet_details(parsed)
         self._write_log(self._packet_to_log(parsed), "info")
 
         if parsed.get("dst_port") in RISKY_PORTS:
@@ -367,6 +707,32 @@ class TrafficAnalyzerApp(tk.Tk):
         self.status_var.set(f"Report folder set to {directory}.")
         self._write_log(f"Report folder set to {directory}", "ok")
 
+    def save_session(self):
+        session_path = save_capture_session(self.packets)
+        self.status_var.set(f"Session saved to {session_path}.")
+        self._write_log(f"Session saved to {session_path}", "ok")
+
+    def load_session(self):
+        file_path = filedialog.askopenfilename(title="Select capture session", filetypes=[("JSON files", "*.json")])
+        if not file_path:
+            return
+        try:
+            packets = load_capture_session(file_path)
+            self.packets = packets
+            self.status_var.set(f"Loaded session from {file_path}.")
+            self._write_log(f"Loaded session from {file_path}", "ok")
+            self.refresh_dashboard()
+        except Exception as exc:  # pragma: no cover - GUI safety net
+            self.status_var.set("Could not load session file.")
+            self._write_log(f"Session load failed: {exc}", "alert")
+
+    def export_summary(self):
+        summary = summarise_traffic(self.packets)
+        export_paths = export_summary(summary, f"traffic_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        self.status_var.set(f"Exports saved to {list(export_paths.values())}.")
+        self._write_log(f"JSON export: {export_paths['json']}", "ok")
+        self._write_log(f"CSV export: {export_paths['csv']}", "ok")
+
     def save_report(self):
         wifi_status = assess_wifi_security(self.wifi_mode_var.get())
         summary = summarise_traffic(self.packets)
@@ -391,11 +757,42 @@ class TrafficAnalyzerApp(tk.Tk):
             "unknown": "#dfe7ff",
         }[wifi_status["status"]])
 
+        if self.packets:
+            self._update_packet_details(self.packets[-1])
+
+        top_talkers = summary.get("top_talkers", [])
+        if top_talkers:
+            top_talkers_text = "\n".join(f"{entry['ip']}: {entry['packets']} packets" for entry in top_talkers[:3])
+            self.top_talkers_var.set(top_talkers_text)
+        else:
+            self.top_talkers_var.set("No traffic yet")
+
+        device_activity = summary.get("device_activity", [])
+        if device_activity:
+            devices_text = "\n".join(f"{entry['ip']}: {entry['packets']} pkts" for entry in device_activity[:3])
+            self.device_activity_var.set(devices_text)
+        else:
+            self.device_activity_var.set("No activity")
+
+        alerts = summary.get("alert_history", summary.get("alerts", []))
+        if alerts:
+            alert_text = "\n".join(f"{alert['severity'].upper()}: {alert['title']}" for alert in alerts[:3])
+            self.alerts_var.set(alert_text)
+        else:
+            self.alerts_var.set("No alerts")
+
+        trend = calculate_trend_snapshot(self.packets)
+        if self.packets:
+            self.trend_var.set(f"{trend['packet_count']} packets | {trend['average_packet_rate']} pkts/s")
+        else:
+            self.trend_var.set("No data")
+
+        risk_label = summary.get("risk_level", "low").upper()
         if summary["port_scan_alert"]["alert"]:
-            self.status_var.set(f"Possible scan: {summary['port_scan_alert']['src_ip']} probed {summary['port_scan_alert']['ports_probed']} ports.")
+            self.status_var.set(f"Possible scan: {summary['port_scan_alert']['src_ip']} probed {summary['port_scan_alert']['ports_probed']} ports. Risk level {risk_label}.")
             self._write_log(summary["port_scan_alert"]["explanation"], "alert")
         elif self.packets:
-            self.status_var.set(f"Analysis complete — {summary['total_packets']} packets reviewed and {summary['risky_port_hits']} risky destinations touched.")
+            self.status_var.set(f"Analysis complete — {summary['total_packets']} packets reviewed, {summary['risky_port_hits']} risky destinations touched, risk level {risk_label}.")
 
 
 def main(argv: List[str] | None = None):

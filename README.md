@@ -1,43 +1,50 @@
 # Network Traffic Observer
 
-This project started out as a small packet sniffer and gradually turned into something more useful: a desktop-style network monitor for checking what is happening on a local network, spotting suspicious traffic patterns, and giving a quick sense of whether the Wi‑Fi setup looks safe or not.
+This project began as a compact packet monitor and evolved into a practical local network observatory for anyone who wants a clearer view of what is happening on their home or work network. It was designed to make raw traffic easier to understand by highlighting suspicious patterns, risky destination ports, active devices, and basic Wi‑Fi security posture in a readable dashboard.
 
-It is not a polished enterprise security suite, and it was never meant to pretend to be one. It is more of a practical tool for curious people who want to see traffic in a more readable way and ask better questions about what is moving around them.
+It is not meant to replace a full enterprise IDS or a professional security appliance. Instead, it serves as a local visibility tool and learning platform: useful for spotting unusual traffic patterns, checking whether a network looks exposed, and understanding how traffic behaviour can reveal more than it first appears.
 
-## What it does
+## Why it was made
 
-The app gives you a dark, modern dashboard with a few useful indicators:
+Most network traffic looks harmless until it is placed in context. A small burst of connections, repeated access to risky ports, or a weak Wi‑Fi mode can all contribute to a larger picture. This project was created to help a user quickly see those signals without needing to read raw packet data all day.
 
-- live packet capture from a selected network interface
+## What it does now
+
+The app captures traffic from a selected interface and turns it into useful summaries. It currently includes:
+
+- live packet capture from a chosen network interface
 - protocol and destination-port visibility
-- detection of suspicious activity like repeated port probing
-- a quick view of risky destinations such as SSH, RDP, SMB, MySQL, VNC, and similar services
-- Wi‑Fi security assessment based on the selected mode
-- exportable report for later review
+- risky service detection for ports such as SSH, RDP, SMB, MySQL, VNC, and others
+- heuristic port-scan detection
+- basic host activity analysis, including top talkers and device traffic volume
+- alert generation for repeated risky service hits and suspicious scan behaviour
+- Wi‑Fi security assessment based on a chosen wireless mode
+- exportable report generation for later review
+- demo mode and headless mode for testing and quick summaries
 
-It is a simple tool, but the point is not complexity for the sake of it. It is about making network patterns easier to understand without burying the user in raw packets.
+## How the code is organised
 
-## Why it is useful
+The main logic lives in [analyser.py](analyser.py), and it is split into a few practical sections:
 
-Most of the time, traffic looks harmless until you look closely. A small burst of packets to different ports can be a scan. Repeated access to a server port can be a clue. An old Wi‑Fi mode can quietly make everything on a network more exposed than it should be.
+- packet classification: determines protocol and destination port
+- traffic summarisation: counts packets, risky hits, and unique IPs
+- host and device analysis: identifies the busiest talkers and active devices
+- alert generation: turns patterns into readable threat warnings
+- Wi‑Fi assessment: evaluates whether the selected Wi‑Fi mode looks secure or outdated
+- report generation: writes a text summary to disk
+- GUI layer: the Tkinter dashboard that presents the results to the user
 
-This app helps with that by pulling those signals into a clearer view. It is not trying to replace a full IDS or a serious security appliance. It is more like a local observatory: something you open to get a better feel for what is happening around your device.
+The tests in [tests/test_analyser.py](tests/test_analyser.py) cover the main behaviours: signal detection, Wi‑Fi assessment, scan detection, and the newer host/alert logic.
 
 ## How to run it
 
-The easiest way is to use the included launcher script, which sets up a local virtual environment and installs the dependencies for you:
+The easiest way is to use the bundled launcher:
 
 ```bash
 python start_app.py
 ```
 
-This will automatically:
-
-- create a local virtual environment if needed
-- install dependencies from the requirements file
-- launch the application
-
-If you want to run it manually instead, this also works:
+Manual setup also works:
 
 ```bash
 python3 -m venv .venv
@@ -46,31 +53,31 @@ pip install -r requirements.txt
 python analyser.py
 ```
 
-On Linux, live packet capture may require elevated permissions:
+If you are running on Linux and need live capture access, elevated permissions may be required:
 
 ```bash
 sudo .venv/bin/python analyser.py
 ```
 
-## Demo mode
+## Demo and headless modes
 
-If you want to try the interface without capturing live traffic, use:
+To launch the interface with sample data:
 
 ```bash
 python analyser.py --demo
 ```
 
-There is also a headless mode for quick summaries in a terminal:
+To print a summary without opening the GUI:
 
 ```bash
 python analyser.py --headless --demo
 ```
 
-## Building the distributable for GitHub release
+## Building a release
 
-This project is meant to be built once by the developer, then shared as a single downloadable file for users.
+This project is meant to be built once on a target platform and distributed as a single app file.
 
-### Build on your machine
+### Build with the included helper script
 
 ```bash
 python3 -m venv .venv
@@ -79,38 +86,23 @@ pip install -r requirements.txt
 python build_exe.py
 ```
 
-This runs the same packaging workflow the project is set up for and creates the final app in the `dist/` folder.
-
 ### Direct PyInstaller build
-
-If you want to build it manually instead of using the helper script:
 
 ```bash
 python -m pip install pyinstaller
 pyinstaller --onefile --windowed --name NetworkTrafficObserver analyser.py
 ```
 
-The output file will be created in `dist/`.
-
-### Important notes
-
-- The executable has to be built on the target platform. A Windows `.exe` is not the same as a Linux binary.
-- The user should not have to install Python or project dependencies.
-- The developer builds the app once and uploads that file to GitHub Releases or another download page.
-- Live traffic capture may still require administrator or root privileges at runtime.
-
-## Notes
-
-This project is meant as a practical learning and monitoring tool. It is useful for checking what is on your local network, spotting suspicious patterns, and understanding how simple network visibility can reveal a lot.
-
-It is best treated as a local security helper rather than a guarantee of what is safe or unsafe. Traffic can be unusual without being malicious, and not every flag is a serious incident. The goal is to make those questions easier to ask and easier to understand.
+The output is placed in the `dist/` folder. Note that binaries must be built for the target platform and live capture may require administrator or root privileges at runtime.
 
 ## Requirements
 
 - Python 3.10+
 - Scapy
-- PyInstaller
 - Tkinter
+- PyInstaller
 
-If you are using a Linux setup, make sure your system has the correct permissions to access the network interface you want to inspect.
+## Notes
+
+This tool is best treated as a local network visibility and learning tool. It helps users inspect traffic, spot suspicious patterns, and understand how small signals can point to bigger network issues without pretending to be a full security suite.
 
